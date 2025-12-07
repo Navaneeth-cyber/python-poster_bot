@@ -1,4 +1,5 @@
 import os
+from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters,
@@ -13,10 +14,12 @@ RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://python-poster-bot.on
 
 # ---------------- States ---------------- #
 ASK_CHANNEL, ASK_IMAGE, ASK_TITLE, ASK_LINKS = range(4)
-
 TEMP = {}
 
 # ---------------- Handlers ---------------- #
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🤖 Bot is alive! Use /post to create a new post.")
+
 async def start_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ You are not authorized.")
@@ -25,19 +28,15 @@ async def start_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📌 Enter channel username (e.g., @MyChannel):")
     return ASK_CHANNEL
 
-
 async def ask_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     channel = update.message.text.strip()
-
     if not channel.startswith("@"):
         await update.message.reply_text("⚠️ Channel must start with '@'. Try again:")
         return ASK_CHANNEL
 
     TEMP["channel"] = channel
-
     await update.message.reply_text("📸 Send image OR type 'skip' to continue without an image:")
     return ASK_IMAGE
-
 
 async def ask_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.photo:
@@ -52,31 +51,22 @@ async def ask_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✏️ Enter title:")
     return ASK_TITLE
 
-
 async def ask_links(update: Update, context: ContextTypes.DEFAULT_TYPE):
     TEMP["title"] = update.message.text.strip()
-
     await update.message.reply_text(
         "🔗 Enter links separated by comma (,):\nExample:\nlink1, link2, link3"
     )
     return ASK_LINKS
 
-
 async def post_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw_links = update.message.text.strip()
-
     links = [x.strip() for x in raw_links.split(",") if x.strip()]
-
     if not links:
         await update.message.reply_text("⚠️ Enter at least one link:")
         return ASK_LINKS
 
-    buttons = []
-    for i, link in enumerate(links):
-        buttons.append([InlineKeyboardButton(f"Ep {i+1}", url=link)])
-
+    buttons = [[InlineKeyboardButton(f"Ep {i+1}", url=link)] for i, link in enumerate(links)]
     keyboard = InlineKeyboardMarkup(buttons)
-
     channel = TEMP["channel"]
 
     try:
@@ -93,25 +83,22 @@ async def post_to_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=TEMP["title"],
                 reply_markup=keyboard
             )
-
         await update.message.reply_text(f"✅ Successfully posted to {channel}")
-
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to post:\n{e}")
 
     TEMP.clear()
     return ConversationHandler.END
 
-
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     TEMP.clear()
     await update.message.reply_text("❌ Cancelled.")
     return ConversationHandler.END
 
-
 # ---------------- Bot Setup ---------------- #
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+# Conversation handler
 conv_handler = ConversationHandler(
     entry_points=[CommandHandler("post", start_post)],
     states={
@@ -125,15 +112,26 @@ conv_handler = ConversationHandler(
     },
     fallbacks=[CommandHandler("cancel", cancel)],
 )
-
 app.add_handler(conv_handler)
 
-# ---------------- Webhook ---------------- #
-WEBHOOK_URL = f"{RENDER_URL}/{BOT_TOKEN}"
+# Start command
+app.add_handler(CommandHandler("start", start))
 
+# ---------------- Webhook ---------------- #
+WEBHOOK_PATH = f"webhook/{BOT_TOKEN}"
+WEBHOOK_URL = f"{RENDER_URL}/{WEBHOOK_PATH}"
+
+# Minimal web server for Render health check
+async def health(request):
+    return web.Response(text="OK")
+web_app = web.Application()
+web_app.router.add_get("/", health)
+
+# Run webhook
 app.run_webhook(
     listen="0.0.0.0",
     port=PORT,
-    url_path=BOT_TOKEN,
-    webhook_url=WEBHOOK_URL
+    url_path=WEBHOOK_PATH,
+    webhook_url=WEBHOOK_URL,
+    web_app=web_app
 )
